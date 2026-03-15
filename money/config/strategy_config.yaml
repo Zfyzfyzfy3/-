@@ -1,0 +1,12 @@
+# 策略参数配置
+
+ma_cross:
+  fast_period: 5    # 快线周期
+  slow_period: 20   # 慢线周期
+  interval: "1h"    # K线周期
+  leverage: "3"     # 杠杆倍数
+
+grid:
+  grid_num: 10       # 网格数量
+  price_range: 0.10  # 价格区间（±10%）
+  each_amount: 100   # 每格下单量（USDT）
