@@ -4,16 +4,36 @@
 回测引擎
 基于历史K线逐根驱动策略，模拟撮合，记录交易历史
 
-用法：
+快速上手：
+    # 1. 准备数据
+    from data.fetcher import DataFetcher
+    fetcher = DataFetcher(settle="usdt")
+    df = fetcher.fetch_range("BTC_USDT", interval="1h",
+                             start=datetime(2025,6,1,tzinfo=timezone.utc),
+                             end=datetime(2025,9,1,tzinfo=timezone.utc))
+
+    # 2. 选择策略
+    from strategy.ma_cross import MACrossStrategy
+    strategy = MACrossStrategy("BTC_USDT", fast=5, slow=20, order_size=1)
+
+    # 3. 初始化引擎（可指定回测时间段）
     engine = BacktestEngine(
-        strategy        = MyStrategy('BTC_USDT'),
-        data            = df,              # 全量历史数据
-        start           = '2024-03-01',    # 指定回测开始日期（可选）
-        end             = '2024-03-31',    # 指定回测结束日期（可选）
+        strategy        = strategy,
+        data            = df,
+        start           = '2025-06-01',   # 可选，不填则使用全部数据
+        end             = '2025-09-01',   # 可选
         initial_capital = 10000,
-        fee_rate        = 0.0005,
+        fee_rate        = 0.001,
     )
+
+    # 4a. 运行并获取结果
     metrics, portfolio = engine.run()
+    print(metrics)                  # 胜率/盈亏比/回报率等
+    positions = portfolio.positions_df()  # 全部历史仓位 DataFrame
+    print(positions)
+
+    # 4b. 打印完整报告（指标 + 净值图 + 仓位表）
+    engine.report()
 """
 import logging
 from datetime import datetime
@@ -111,16 +131,64 @@ class BacktestEngine:
         return metrics, self.portfolio
 
     # ------------------------------------------------------------------
-    # 报告
+    # 报告（含终端净值曲线图）
     # ------------------------------------------------------------------
     def report(self):
         metrics, portfolio = self.run()
-        print("\n" + "=" * 50)
-        print(f" 回测报告  合约: {self.strategy.contract}")
+
+        # ── 文字报告 ──────────────────────────────────────────────────
+        print("\n" + "=" * 55)
+        print(f"  回测报告  合约: {self.strategy.contract}")
         if self.start or self.end:
-            print(f" 时间范围: {self.start or '最早'} → {self.end or '最新'}")
-        print("=" * 50)
+            print(f"  时间范围: {self.start or '最早'} → {self.end or '最新'}")
+        print("=" * 55)
         for k, v in metrics.items():
-            print(f"  {k:12s}: {v}")
-        print("=" * 50 + "\n")
+            print(f"  {k:14s}: {v}")
+        print("=" * 55)
+
+        # ── 终端净值曲线图 ────────────────────────────────────────────
+        equity = portfolio.equity_series()
+        if len(equity) >= 2:
+            try:
+                import plotext as plt
+                dates  = [str(ts.date()) if hasattr(ts, 'date') else str(ts)
+                          for ts in equity.index]
+                values = equity.tolist()
+
+                plt.clf()
+                plt.theme("dark")
+                plt.plot_size(width=90, height=20)
+                plt.date_form("Y-m-d")
+                plt.plot(dates, values, color="cyan", label="净值")
+                plt.hline(portfolio.initial_capital, color="white")
+                plt.title(f"净值曲线  {dates[0]} → {dates[-1]}")
+                plt.xlabel("日期")
+                plt.ylabel("USDT")
+                print()
+                plt.show()
+            except ImportError:
+                pass  # plotext 未安装时跳过图表
+
+        # ── 逐笔交易明细（全部）────────────────────────────────────
+        positions = portfolio.positions_df()
+        if not positions.empty:
+            total = len(positions)
+            print(f"\n  历史仓位记录（共 {total} 笔）:")
+            # 调整显示列，宽度适应终端
+            pd.set_option("display.max_rows", None)
+            pd.set_option("display.float_format", "{:.4f}".format)
+            pd.set_option("display.width", 130)
+            display_cols = [
+                "entry_time", "exit_time", "holding_h",
+                "direction", "size",
+                "entry_price", "exit_price",
+                "pnl", "pnl_pct", "fee",
+                "reason_open", "reason_close",
+            ]
+            print(positions[display_cols].to_string(index=True))
+            pd.reset_option("display.max_rows")
+            pd.reset_option("display.float_format")
+            pd.reset_option("display.width")
+            print()
+
         return metrics, portfolio
