@@ -160,7 +160,7 @@ class DataFetcher:
     # ------------------------------------------------------------------
     # 便捷方法
     # ------------------------------------------------------------------
-    def fetch_year(self, contract: str, interval: str = "1h") -> pd.DataFrame:
+    def fetch_year(self, contract: str, interval: str = "1m") -> pd.DataFrame:
         """拉取近一年全量数据"""
         return self.fetch_range(contract, interval)
 
