@@ -42,11 +42,14 @@ def calc_metrics(portfolio) -> dict:
     drawdown   = (equity - roll_max) / roll_max
     max_dd     = float(drawdown.min())
 
-    # ── 回撤持续天数 ──────────────────────────────────────────────────
-    in_dd = drawdown < 0
-    dd_groups = (in_dd != in_dd.shift()).cumsum()
-    dd_lengths = in_dd[in_dd].groupby(dd_groups[in_dd]).count()
-    max_dd_days = int(dd_lengths.max()) if not dd_lengths.empty else 0
+    # ── 回撤持续天数（按自然日）───────────────────────────────────────
+    # 注意：必须用日线净值序列统计；若用 equity 样本点计数会把“点数”误当“天数”。
+    daily_roll_max = daily.cummax()
+    daily_drawdown = (daily - daily_roll_max) / daily_roll_max
+    in_dd_daily = daily_drawdown < 0
+    dd_day_groups = (in_dd_daily != in_dd_daily.shift()).cumsum()
+    dd_day_lengths = in_dd_daily[in_dd_daily].groupby(dd_day_groups[in_dd_daily]).count()
+    max_dd_days = int(dd_day_lengths.max()) if not dd_day_lengths.empty else 0
 
     # ── 交易统计 ──────────────────────────────────────────────────────
     n_trades  = len(trades)
@@ -117,6 +120,13 @@ def calc_metrics_raw(portfolio) -> dict:
     drawdown = (equity - roll_max) / roll_max
     max_dd   = float(drawdown.min())
 
+    daily_roll_max = daily.cummax()
+    daily_drawdown = (daily - daily_roll_max) / daily_roll_max
+    in_dd_daily = daily_drawdown < 0
+    dd_day_groups = (in_dd_daily != in_dd_daily.shift()).cumsum()
+    dd_day_lengths = in_dd_daily[in_dd_daily].groupby(dd_day_groups[in_dd_daily]).count()
+    max_dd_days = int(dd_day_lengths.max()) if not dd_day_lengths.empty else 0
+
     pnls     = [t.pnl for t in trades]
     wins     = [p for p in pnls if p > 0]
     losses   = [p for p in pnls if p <= 0]
@@ -126,9 +136,9 @@ def calc_metrics_raw(portfolio) -> dict:
         "annual_return":  annual_return,
         "sharpe":         sharpe,
         "max_drawdown":   max_dd,
+        "max_drawdown_days": max_dd_days,
         "n_trades":       len(trades),
         "win_rate":       len(wins) / len(trades) if trades else 0.0,
         "profit_factor":  abs(sum(wins) / sum(losses)) if losses else float("inf"),
         "final_equity":   final,
     }
-

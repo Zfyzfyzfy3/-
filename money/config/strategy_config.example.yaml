@@ -14,6 +14,7 @@ runtime:
   start: null                     # 回测开始日期，示例 "2025-06-01"
   end: null                       # 回测结束日期，示例 "2025-09-01"
   no_cache: false                 # true=忽略本地缓存并重新拉取数据
+  multi_intervals: []             # 多周期回测，如 ["4h", "5m"]
   poll_seconds: 60                # live 模式轮询间隔（秒）
 
 market:
@@ -25,8 +26,8 @@ backtest:
   fee_rate: 0.0005                # 手续费率（0.05%）
 
 ma_cross:
-  fast: 5                         # MA 快线窗口（K线根数）
-  slow: 20                        # MA 慢线窗口（K线根数）
-  interval: "1h"                  # K线周期: 10s/1m/5m/15m/30m/1h/2h/4h/8h/1d/7d/30d
+  fast: 300                         # MA 快线窗口（K线根数）
+  slow: 1200                        # MA 慢线窗口（K线根数）
+  interval: "1m"                  # K线周期: 10s/1m/5m/15m/30m/1h/2h/4h/8h/1d/7d/30d
   order_size: 0.001               # 每次开仓手数
   only_long: false                # true=仅做多

@@ -9,6 +9,7 @@
   - 可通过 params 禁止做空（only_long=True）
 """
 import logging
+from data.preprocessor import add_ma
 from strategy.base import BaseStrategy, Signal
 
 logger = logging.getLogger(__name__)
@@ -106,7 +107,11 @@ class MACrossStrategy(BaseStrategy):
 
         return None
 
+    def on_prepare(self, df):
+        """确保所需 MA 列存在（尤其是非默认窗口，如 fast=1）。"""
+        periods = sorted({int(self.fast), int(self.slow)})
+        return add_ma(df, periods)
+
     def on_stop(self):
         """回测结束：重置持仓状态"""
         self.position = 0
-

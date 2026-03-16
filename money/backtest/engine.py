@@ -83,6 +83,7 @@ class BacktestEngine:
         fee_rate: float = 0.0005,
         indicators: Optional[list] = None,
         config_snapshot: Optional[dict] = None,
+        multi_data: Optional[dict] = None,
     ):
         """
         :param strategy:        策略实例（继承 BaseStrategy）
@@ -101,6 +102,7 @@ class BacktestEngine:
         self.portfolio = Portfolio(initial_capital, fee_rate)
         self.indicators = indicators or ['ma', 'ema', 'rsi', 'boll', 'macd']
         self.config_snapshot = config_snapshot or {}
+        self.multi_data = multi_data or {}
 
         # 初始化文件日志
         contract = getattr(strategy, 'contract', 'UNKNOWN')
@@ -120,6 +122,7 @@ class BacktestEngine:
             ("strategy", type(self.strategy).__name__),
             ("contract", getattr(self.strategy, "contract", "UNKNOWN")),
             ("interval", self.config_snapshot.get("interval", "N/A")),
+            ("multi_intervals", self.config_snapshot.get("multi_intervals", [])),
             ("start", self.start or "最早"),
             ("end", self.end or "最新"),
             ("initial_capital", self.portfolio.initial_capital),
@@ -130,6 +133,17 @@ class BacktestEngine:
         for k, v in sorted(getattr(self.strategy, "params", {}).items()):
             items.append((f"param.{k}", v))
         return items
+
+    def _equity_at_price(self, price: float) -> float:
+        """按当前持仓和给定价格估算账户净值（含未实现盈亏）"""
+        pos = self.portfolio.position
+        if pos > 0:
+            unrealized = pos * (price - self.portfolio.entry_price)
+        elif pos < 0:
+            unrealized = abs(pos) * (self.portfolio.entry_price - price)
+        else:
+            unrealized = 0.0
+        return self.portfolio.capital + unrealized
 
     # ------------------------------------------------------------------
     # 指标预处理
@@ -177,12 +191,29 @@ class BacktestEngine:
         logger.info("开始逐K线回测，共 %d 根K线", total_bars)
         self.strategy.on_start()
 
+        day_index = df.index.normalize()
+        unique_days = day_index.unique()
+        total_days = len(unique_days)
+        start_day = unique_days[0].date() if total_days > 0 else None
+        day_no_map = {d.date(): i + 1 for i, d in enumerate(unique_days)}
+        if start_day:
+            logger.info("运行状态: 回测起始日=%s，总交易日=%d", start_day, total_days)
+
         signal_count = 0
         stopped_early = False
         for i in range(total_bars):
             history = df.iloc[:i + 1]   # 含当前 bar 的全部历史
             bar     = df.iloc[i]
-            signal  = self.strategy.on_bar(bar, history)
+            if self.multi_data:
+                multi_history = {}
+                for interval, df_tf in self.multi_data.items():
+                    if df_tf is None or df_tf.empty:
+                        multi_history[interval] = df_tf
+                        continue
+                    multi_history[interval] = df_tf[df_tf.index <= bar.name]
+                signal = self.strategy.on_bar_multi(bar, history, multi_history)
+            else:
+                signal  = self.strategy.on_bar(bar, history)
             if signal:
                 signal_count += 1
                 logger.info(
@@ -193,9 +224,40 @@ class BacktestEngine:
                 try:
                     self.portfolio.execute(signal, bar)
                 except InsufficientBalanceError as e:
+                    price = float(bar["close"])
+                    # 记录当根K线净值快照，避免净值曲线为空
+                    self.portfolio._snapshot(price, bar.name)
+                    equity = self._equity_at_price(price)
+                    current_day = bar.name.date()
+                    day_no = day_no_map.get(current_day, 0)
                     logger.warning("回测提前终止（第 %d/%d 根K线）: %s", i + 1, total_bars, e)
+                    logger.info(
+                        "运行状态: 起始日=%s 当前第%d/%d天 当前日=%s 当前时刻=%s "
+                        "余额(含浮盈亏)=%.4f 可用资金=%.4f 持仓=%+d",
+                        start_day, day_no, total_days, current_day, bar.name,
+                        equity, self.portfolio.capital, self.portfolio.position
+                    )
                     stopped_early = True
                     break
+            else:
+                # 无信号也要记录净值曲线（便于回撤/收益计算）
+                self.portfolio._snapshot(float(bar["close"]), bar.name)
+
+            # 每个交易日最后一根K线：打印当日运行状态与日终余额
+            current_day = bar.name.date()
+            is_last_bar_of_day = (i == total_bars - 1) or (df.index[i + 1].date() != current_day)
+            if is_last_bar_of_day and start_day:
+                day_no = day_no_map.get(current_day, 0)
+                price = float(bar["close"])
+                equity = self._equity_at_price(price)
+                day_end_2359 = bar.name.normalize() + pd.Timedelta(hours=23, minutes=59)
+                logger.info(
+                    "运行状态: 起始日=%s 当前第%d/%d天 当前日=%s 日内最后K线=%s "
+                    "日终时刻=%s 余额(含浮盈亏)=%.4f 可用资金=%.4f 持仓=%+d",
+                    start_day, day_no, total_days, current_day, bar.name,
+                    day_end_2359,
+                    equity, self.portfolio.capital, self.portfolio.position
+                )
 
         self.strategy.on_stop()
         if stopped_early:

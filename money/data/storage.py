@@ -31,5 +31,7 @@ class DataStorage:
         if not os.path.exists(path):
             return None
         df = pd.read_csv(path, index_col="timestamp", parse_dates=True)
+        # 统一为 UTC 时区，便于区间比较与补缺
+        df.index = pd.to_datetime(df.index, utc=True)
         logger.info("loaded %d bars from %s", len(df), path)
         return df

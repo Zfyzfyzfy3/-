@@ -6,6 +6,8 @@
 
 用户自定义策略只需继承 BaseStrategy，并实现：
   - on_bar(bar, history) → Signal | None   【必须实现】
+  - on_bar_multi(bar, history, multi_history) → Signal | None
+        （可选，多周期策略使用）
   - on_prepare(df)       → DataFrame        【可选：追加自定义指标列】
   - on_start()                               【可选：初始化状态】
   - on_stop()                                【可选：清仓/保存状态】
@@ -64,6 +66,23 @@ class BaseStrategy(ABC):
         pass
 
     # ------------------------------------------------------------------
+    # 【可选】多周期信号逻辑
+    # ------------------------------------------------------------------
+    def on_bar_multi(
+        self,
+        bar: pd.Series,
+        history: pd.DataFrame,
+        multi_history: dict[str, pd.DataFrame],
+    ) -> Optional[Signal]:
+        """
+        多周期回测时调用。
+        :param bar: 当前K线（主周期）
+        :param history: 主周期历史（含当前 bar）
+        :param multi_history: 其他周期历史数据字典，例如 {"4h": df, "5m": df}
+        """
+        return self.on_bar(bar, history)
+
+    # ------------------------------------------------------------------
     # 【可选钩子】自定义指标
     # ------------------------------------------------------------------
     def on_prepare(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -87,4 +106,3 @@ class BaseStrategy(ABC):
     def on_stop(self):
         """引擎停止时调用，可用于清仓、保存状态等"""
         pass
-

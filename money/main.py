@@ -16,6 +16,7 @@ import os
 import sys
 from types import SimpleNamespace
 
+import pandas as pd
 import yaml
 
 # gate_api 包位于 gateapi-python/ 目录下，加入模块搜索路径
@@ -74,6 +75,7 @@ def _load_config(path: str = CONFIG_PATH) -> SimpleNamespace:
         start=runtime.get("start"),
         end=runtime.get("end"),
         no_cache=bool(runtime.get("no_cache", False)),
+        multi_intervals=runtime.get("multi_intervals", []),
         strategy=strategy_name,
         fast=int(strategy_cfg.get("fast", 5)),
         slow=int(strategy_cfg.get("slow", 20)),
@@ -103,6 +105,15 @@ def _load_config(path: str = CONFIG_PATH) -> SimpleNamespace:
         raise ValueError(
             f"不支持的 interval: {args.interval}，可选: {sorted(supported_intervals)}"
         )
+    # 多周期配置校验（允许空或单个字符串）
+    if isinstance(args.multi_intervals, str):
+        args.multi_intervals = [args.multi_intervals]
+    if args.multi_intervals:
+        for itv in args.multi_intervals:
+            if itv not in supported_intervals:
+                raise ValueError(
+                    f"不支持的 multi_interval: {itv}，可选: {sorted(supported_intervals)}"
+                )
     if not args.api_key or not args.api_secret:
         raise ValueError("缺少 API 凭证: 请在配置文件中填写 api.key 和 api.secret")
     return args
@@ -112,30 +123,111 @@ def _load_config(path: str = CONFIG_PATH) -> SimpleNamespace:
 # 回测入口
 # ──────────────────────────────────────────────────────────────────────
 def run_backtest(args):
-    from data.fetcher import DataFetcher
+    from data.fetcher import DataFetcher, INTERVAL_SECONDS
+    from data.resample import resample_ohlcv
     from data.storage import DataStorage
     from backtest.engine import BacktestEngine
+
+    def _to_utc_ts(value):
+        if value is None:
+            return None
+        ts = pd.Timestamp(value)
+        if ts.tzinfo is None:
+            return ts.tz_localize("UTC")
+        return ts.tz_convert("UTC")
+
+    def _find_missing_ranges(df, start_ts, end_ts, interval):
+        if df is None or df.empty:
+            return [(start_ts, end_ts)] if start_ts and end_ts else []
+        idx = df.index.sort_values()
+        if start_ts is not None:
+            idx = idx[idx >= start_ts]
+        if end_ts is not None:
+            idx = idx[idx <= end_ts]
+        if idx.empty:
+            return [(start_ts, end_ts)] if start_ts and end_ts else []
+
+        freq = pd.Timedelta(seconds=INTERVAL_SECONDS[interval])
+        missing = []
+
+        if start_ts is not None and start_ts < idx[0]:
+            missing.append((start_ts, idx[0] - freq))
+        if end_ts is not None and end_ts > idx[-1]:
+            missing.append((idx[-1] + freq, end_ts))
+
+        diffs = idx[1:] - idx[:-1]
+        gaps = diffs > freq
+        for i, is_gap in enumerate(gaps):
+            if is_gap:
+                gap_start = idx[i] + freq
+                gap_end = idx[i + 1] - freq
+                if gap_start <= gap_end:
+                    missing.append((gap_start, gap_end))
+        return missing
 
     start    = args.start
     end      = args.end
     no_cache = args.no_cache
     contract = args.contract
+    base_interval = "1m"
 
     logger.info("=== 开始回测 策略=%s  时间段: %s → %s ===",
                 args.strategy, start or "一年前", end or "现在")
 
     # ── 数据加载 ──────────────────────────────────────────────────────
     storage = DataStorage()
-    df = None if no_cache else storage.load(contract, args.interval)
+    fetcher = DataFetcher(args.api_key, args.api_secret, args.api_host)
+    df = None if no_cache else storage.load(contract, base_interval)
 
     if df is None:
         reason = "强制刷新" if no_cache else "本地无缓存"
-        logger.info("%s，从 API 拉取近一年数据...", reason)
-        fetcher = DataFetcher(args.api_key, args.api_secret, args.api_host)
-        df = fetcher.fetch_year(contract, interval=args.interval)
-        storage.save(df, contract, args.interval)
+        if start or end:
+            logger.info("%s，从 API 拉取指定区间数据...", reason)
+            df = fetcher.fetch_range(contract, interval=base_interval,
+                                     start=start, end=end)
+        else:
+            logger.info("%s，从 API 拉取近一年数据...", reason)
+            df = fetcher.fetch_year(contract, interval=base_interval)
+        storage.save(df, contract, base_interval)
     else:
         logger.info("使用本地缓存数据（%d 根K线）", len(df))
+        if start or end:
+            start_ts = _to_utc_ts(start) if start else None
+            end_ts = _to_utc_ts(end) if end else None
+            missing_ranges = _find_missing_ranges(df, start_ts, end_ts, base_interval)
+            if missing_ranges:
+                logger.info("缓存覆盖不足，需补齐 %d 段区间", len(missing_ranges))
+                for s, e in missing_ranges:
+                    if s is None or e is None or s > e:
+                        continue
+                    logger.info("补齐区间: %s → %s", s, e)
+                    patch = fetcher.fetch_range(contract, interval=base_interval,
+                                                start=s, end=e)
+                    if not patch.empty:
+                        df = pd.concat([df, patch]).sort_index()
+                        df = df[~df.index.duplicated(keep="last")]
+                    else:
+                        logger.warning("补齐失败或无数据: %s → %s", s, e)
+                storage.save(df, contract, base_interval)
+
+    # ── 按需聚合到策略 interval ─────────────────────────────────────
+    df_base = df
+    if args.interval != base_interval:
+        logger.info("按 %s 聚合母级别 %s 数据", args.interval, base_interval)
+        df = resample_ohlcv(df_base, args.interval)
+
+    # ── 多周期数据准备（从 1m 聚合） ───────────────────────────────
+    multi_data = {}
+    if args.multi_intervals:
+        for itv in args.multi_intervals:
+            if itv == args.interval:
+                multi_data[itv] = df
+                continue
+            if itv == base_interval:
+                multi_data[itv] = df_base
+                continue
+            logger.info("准备多周期数据: %s", itv)
+            multi_data[itv] = resample_ohlcv(df_base, itv)
 
     # ── 策略构造 ──────────────────────────────────────────────────────
     strategy = _build_strategy(args.strategy, contract, args)
@@ -154,10 +246,12 @@ def run_backtest(args):
             "strategy": args.strategy,
             "contract": args.contract,
             "interval": args.interval,
+            "multi_intervals": args.multi_intervals,
             "start": args.start,
             "end": args.end,
             "no_cache": args.no_cache,
         },
+        multi_data = multi_data,
     )
     engine.report()   # 自动打印：指标 + 净值曲线图 + 全部历史仓位
 

@@ -97,6 +97,12 @@ class DataFetcher:
         if start is None:
             start = now - timedelta(days=365)
 
+        # 允许传入字符串日期
+        if isinstance(start, str):
+            start = pd.Timestamp(start, tz="UTC").to_pydatetime()
+        if isinstance(end, str):
+            end = pd.Timestamp(end, tz="UTC").to_pydatetime()
+
         # 确保 timezone-aware（naive 视为 UTC）
         if start.tzinfo is None:
             start = start.replace(tzinfo=timezone.utc)
@@ -113,6 +119,17 @@ class DataFetcher:
         if step_seconds is None:
             raise ValueError(f"unsupported interval '{interval}', "
                              f"supported: {list(INTERVAL_SECONDS.keys())}")
+
+        # 1m 历史深度受限（Gate 返回 10000 points 最近限制）
+        if interval == "1m":
+            recent_start = now - timedelta(minutes=10000)
+            if end < recent_start:
+                logger.warning("1m data too old: end=%s < %s, skip fetch",
+                               end, recent_start)
+                return pd.DataFrame()
+            if start < recent_start:
+                logger.warning("1m data too old, clamped to %s", recent_start)
+                start = recent_start
 
         # 每次请求的时间窗口大小
         chunk_seconds = step_seconds * MAX_POINTS_PER_REQUEST

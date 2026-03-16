@@ -185,8 +185,12 @@ class Portfolio:
         return self.closed_trades
 
     def equity_series(self) -> pd.Series:
-        df = pd.DataFrame(self.equity_curve).set_index("time")
-        return df["equity"]
+        if not self.equity_curve:
+            return pd.Series(dtype="float64", name="equity")
+        df = pd.DataFrame(self.equity_curve)
+        if "time" not in df.columns:
+            return pd.Series(dtype="float64", name="equity")
+        return df.set_index("time")["equity"]
 
     def positions_df(self) -> pd.DataFrame:
         """
@@ -236,4 +240,3 @@ class Portfolio:
                 "reason_close": t.reason_close,
             })
         return pd.DataFrame(rows)
-
