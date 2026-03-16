@@ -15,6 +15,10 @@ import pandas as pd
 logger = logging.getLogger(__name__)
 
 
+class InsufficientBalanceError(Exception):
+    """余额不足，无法支付开仓手续费，回测终止"""
+
+
 class Trade:
     """单笔已平仓交易记录"""
     def __init__(self, entry_time, exit_time, direction, size,
@@ -98,21 +102,36 @@ class Portfolio:
     def _open(self, size: int, price: float, ts, reason: str):
         """开仓"""
         fee = abs(size) * price * self.fee_rate
+        if self.capital < fee:
+            logger.warning(
+                "[OPEN 失败] %s  余额不足: capital=%.4f < fee=%.4f  "
+                "方向=%s size=%+d price=%.4f  回测终止",
+                ts, self.capital, fee,
+                'long' if size > 0 else 'short', size, price
+            )
+            raise InsufficientBalanceError(
+                f"余额不足: capital={self.capital:.4f} < fee={fee:.4f}，"
+                f"无法在 {ts} 开仓 {size} 手 @ {price:.4f}"
+            )
         self.capital    -= fee
         self.position    = size
         self.entry_price = price
         self.entry_time  = ts
         self.entry_reason = reason
-        logger.debug("OPEN  %s size=%+d @ %.2f fee=%.4f [%s]",
-                     ts, size, price, fee, reason)
+        logger.info("[OPEN ] %s  方向=%-5s  size=%+d  开仓价=%.4f  手续费=%.4f  原因=%s",
+                    ts, 'long' if size > 0 else 'short', size, price, fee, reason)
 
     def _add(self, size: int, price: float):
         """加仓：更新均价"""
         fee = abs(size) * price * self.fee_rate
         self.capital -= fee
         total_size   = self.position + size
-        self.entry_price = (self.entry_price * abs(self.position) +
-                            price * abs(size)) / abs(total_size)
+        new_avg = (self.entry_price * abs(self.position) +
+                   price * abs(size)) / abs(total_size)
+        logger.info("[ADD  ] 方向=%-5s  size=%+d  加仓价=%.4f  新均价=%.4f  总持仓=%d",
+                    'long' if self.position > 0 else 'short',
+                    size, price, new_avg, total_size)
+        self.entry_price = new_avg
         self.position = total_size
 
     def _close(self, close_size: int, price: float, ts, reason: str):
@@ -140,8 +159,8 @@ class Portfolio:
             reason_close = reason,
         )
         self.closed_trades.append(trade)
-        logger.debug("CLOSE %s size=%d @ %.2f pnl=%.4f [%s]",
-                     ts, close_size, price, trade.pnl, reason)
+        logger.info("[CLOSE] %s  方向=%-5s  size=%d  平仓价=%.4f  pnl=%+.4f  手续费=%.4f  原因=%s",
+                    ts, direction, close_size, price, trade.pnl, fee, reason)
 
     def _snapshot(self, price: float, ts):
         """记录当前净值"""

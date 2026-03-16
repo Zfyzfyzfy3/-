@@ -36,15 +36,40 @@
     engine.report()
 """
 import logging
+import os
 from datetime import datetime
 from typing import Optional, Union
 
 import pandas as pd
-from backtest.portfolio import Portfolio
+from backtest.portfolio import Portfolio, InsufficientBalanceError
 from backtest.metrics import calc_metrics
 from data.preprocessor import add_ma, add_ema, add_rsi, add_bollinger, add_macd
 
 logger = logging.getLogger(__name__)
+
+# 日志文件存放目录（相对 money/ 根目录）
+_LOG_DIR = os.path.join(os.path.dirname(__file__), "..", "Log", "backTest")
+
+
+def _setup_file_logging(tag: str) -> logging.FileHandler:
+    """
+    在 Log/backTest/ 下创建带时间戳的日志文件，将 backtest 相关 logger
+    的输出同时写入该文件，返回 handler（供后续 remove）。
+    """
+    os.makedirs(_LOG_DIR, exist_ok=True)
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    log_path = os.path.join(_LOG_DIR, f"backtest_{tag}_{ts}.log")
+    fh = logging.FileHandler(log_path, encoding="utf-8")
+    fh.setLevel(logging.DEBUG)
+    fh.setFormatter(logging.Formatter(
+        "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+    ))
+    # 挂载到 backtest / data / strategy 根 logger，确保捕获所有子模块日志
+    for name in ("backtest", "data", "strategy", "__main__"):
+        logging.getLogger(name).addHandler(fh)
+        logging.getLogger(name).setLevel(logging.DEBUG)
+    logger.info("日志文件: %s", log_path)
+    return fh
 
 
 class BacktestEngine:
@@ -74,6 +99,17 @@ class BacktestEngine:
         self.end   = pd.Timestamp(end,   tz="UTC") if end   else None
         self.portfolio = Portfolio(initial_capital, fee_rate)
         self.indicators = indicators or ['ma', 'ema', 'rsi', 'boll', 'macd']
+
+        # 初始化文件日志
+        contract = getattr(strategy, 'contract', 'UNKNOWN')
+        self._log_handler = _setup_file_logging(contract)
+        logger.info(
+            "BacktestEngine 初始化: contract=%s strategy=%s start=%s end=%s "
+            "initial_capital=%.2f fee_rate=%.4f indicators=%s",
+            contract, type(strategy).__name__,
+            self.start or '最早', self.end or '最新',
+            initial_capital, fee_rate, self.indicators
+        )
 
     # ------------------------------------------------------------------
     # 指标预处理
@@ -117,16 +153,37 @@ class BacktestEngine:
     # ------------------------------------------------------------------
     def run(self):
         df = self._prepare_data(self.raw_data)
+        total_bars = len(df)
+        logger.info("开始逐K线回测，共 %d 根K线", total_bars)
         self.strategy.on_start()
 
-        for i in range(len(df)):
+        signal_count = 0
+        stopped_early = False
+        for i in range(total_bars):
             history = df.iloc[:i + 1]   # 含当前 bar 的全部历史
             bar     = df.iloc[i]
             signal  = self.strategy.on_bar(bar, history)
             if signal:
-                self.portfolio.execute(signal, bar)
+                signal_count += 1
+                logger.info(
+                    "[bar %d/%d] %s 信号: size=%+d reason=%s price=%.4f",
+                    i + 1, total_bars, bar.name,
+                    signal.size, signal.reason, float(bar["close"])
+                )
+                try:
+                    self.portfolio.execute(signal, bar)
+                except InsufficientBalanceError as e:
+                    logger.warning("回测提前终止（第 %d/%d 根K线）: %s", i + 1, total_bars, e)
+                    stopped_early = True
+                    break
 
         self.strategy.on_stop()
+        if stopped_early:
+            logger.info("回测因余额不足提前结束，已完成 %d/%d 根K线，触发信号 %d 次，成交 %d 笔",
+                        i + 1, total_bars, signal_count, len(self.portfolio.closed_trades))
+        else:
+            logger.info("回测完成，共 %d 根K线，触发信号 %d 次，成交 %d 笔",
+                        total_bars, signal_count, len(self.portfolio.closed_trades))
         metrics = calc_metrics(self.portfolio)
         return metrics, self.portfolio
 
@@ -134,6 +191,7 @@ class BacktestEngine:
     # 报告（含终端净值曲线图）
     # ------------------------------------------------------------------
     def report(self):
+        logger.info("========== 回测报告开始 ==========")
         metrics, portfolio = self.run()
 
         # ── 文字报告 ──────────────────────────────────────────────────
@@ -144,7 +202,9 @@ class BacktestEngine:
         print("=" * 55)
         for k, v in metrics.items():
             print(f"  {k:14s}: {v}")
+            logger.info("  %-14s: %s", k, v)
         print("=" * 55)
+        logger.info("========== 回测报告结束 ==========")
 
         # ── 终端净值曲线图 ────────────────────────────────────────────
         equity = portfolio.equity_series()

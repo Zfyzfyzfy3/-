@@ -5,8 +5,12 @@
 基于 Portfolio.equity_series() 和 Portfolio.closed_trades 计算：
   年化收益率、夏普比率、最大回撤、胜率、盈亏比、交易次数等
 """
+import logging
+
 import numpy as np
 import pandas as pd
+
+logger = logging.getLogger(__name__)
 
 
 def calc_metrics(portfolio) -> dict:
@@ -61,7 +65,7 @@ def calc_metrics(portfolio) -> dict:
     else:
         win_rate = win_rate  = avg_win = avg_loss = profit_factor = avg_pnl = total_fee = 0.0
 
-    return {
+    result = {
         "初始资金":      f"{initial:,.2f} USDT",
         "最终净值":      f"{final:,.2f} USDT",
         "总收益率":      f"{total_return*100:.2f}%",
@@ -77,7 +81,15 @@ def calc_metrics(portfolio) -> dict:
         "平均亏损":      f"{avg_loss:.4f} USDT",
         "总手续费":      f"{total_fee:.4f} USDT",
     }
+    _log_metrics(result)
+    return result
 
+
+def _log_metrics(metrics: dict) -> None:
+    logger.info("----- 回测指标 -----")
+    for k, v in metrics.items():
+        logger.info("  %-14s: %s", k, v)
+    logger.info("-" * 30)
 
 def calc_metrics_raw(portfolio) -> dict:
     """返回原始数值（不格式化），方便程序化使用"""
