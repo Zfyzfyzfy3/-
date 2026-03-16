@@ -1,12 +1,23 @@
-# 策略参数配置
-
+api:
+  key: 374b79e25c60a84716b26cc6c74bad62
+  secret: 8ea3736b79e08ffff2c7ebd8bff29c358e68ebb388e14c6dda3707a1f145ba5c
+  host: https://api.gateio.ws/api/v4
+runtime:
+  mode: backtest
+  strategy: ma_cross
+  start: null
+  end: null
+  no_cache: false
+  poll_seconds: 60
+market:
+  contract: BTC_USDT
+  settle: usdt
+backtest:
+  initial_capital: 10000
+  fee_rate: 0.0005
 ma_cross:
-  fast_period: 5    # 快线周期
-  slow_period: 20   # 慢线周期
-  interval: "1h"    # K线周期
-  leverage: "3"     # 杠杆倍数
-
-grid:
-  grid_num: 10       # 网格数量
-  price_range: 0.10  # 价格区间（±10%）
-  each_amount: 100   # 每格下单量（USDT）
+  fast: 5
+  slow: 20
+  interval: 1h
+  order_size: 0.001
+  only_long: false

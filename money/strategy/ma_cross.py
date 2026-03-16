@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 class MACrossStrategy(BaseStrategy):
     def __init__(self, contract: str, fast: int = 5, slow: int = 20,
-                 order_size: int = 10, only_long: bool = False):
+                 order_size: int = 1, only_long: bool = False):
         """
         :param contract:   合约名称
         :param fast:       快线周期

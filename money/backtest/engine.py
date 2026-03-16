@@ -82,6 +82,7 @@ class BacktestEngine:
         initial_capital: float = 10000,
         fee_rate: float = 0.0005,
         indicators: Optional[list] = None,
+        config_snapshot: Optional[dict] = None,
     ):
         """
         :param strategy:        策略实例（继承 BaseStrategy）
@@ -99,6 +100,7 @@ class BacktestEngine:
         self.end   = pd.Timestamp(end,   tz="UTC") if end   else None
         self.portfolio = Portfolio(initial_capital, fee_rate)
         self.indicators = indicators or ['ma', 'ema', 'rsi', 'boll', 'macd']
+        self.config_snapshot = config_snapshot or {}
 
         # 初始化文件日志
         contract = getattr(strategy, 'contract', 'UNKNOWN')
@@ -110,6 +112,24 @@ class BacktestEngine:
             self.start or '最早', self.end or '最新',
             initial_capital, fee_rate, self.indicators
         )
+
+    def _report_config_items(self) -> list[tuple[str, object]]:
+        """汇总本次回测配置，用于报告打印"""
+        items = [
+            ("mode", self.config_snapshot.get("mode", "backtest")),
+            ("strategy", type(self.strategy).__name__),
+            ("contract", getattr(self.strategy, "contract", "UNKNOWN")),
+            ("interval", self.config_snapshot.get("interval", "N/A")),
+            ("start", self.start or "最早"),
+            ("end", self.end or "最新"),
+            ("initial_capital", self.portfolio.initial_capital),
+            ("fee_rate", self.portfolio.fee_rate),
+            ("indicators", self.indicators),
+            ("no_cache", self.config_snapshot.get("no_cache", "N/A")),
+        ]
+        for k, v in sorted(getattr(self.strategy, "params", {}).items()):
+            items.append((f"param.{k}", v))
+        return items
 
     # ------------------------------------------------------------------
     # 指标预处理
@@ -197,8 +217,10 @@ class BacktestEngine:
         # ── 文字报告 ──────────────────────────────────────────────────
         print("\n" + "=" * 55)
         print(f"  回测报告  合约: {self.strategy.contract}")
-        if self.start or self.end:
-            print(f"  时间范围: {self.start or '最早'} → {self.end or '最新'}")
+        print("  本次配置:")
+        for k, v in self._report_config_items():
+            print(f"  {k:14s}: {v}")
+            logger.info("  [config] %-14s: %s", k, v)
         print("=" * 55)
         for k, v in metrics.items():
             print(f"  {k:14s}: {v}")
